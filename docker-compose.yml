@@ -25,5 +25,45 @@ services:
       timeout: 5s
       retries: 5
 
+  # Express API. Runs migrations on boot, then starts in watch mode.
+  api:
+    build: ./server
+    command: sh -c "npm run db:migrate && npm run dev"
+    environment:
+      # Service names (postgres/redis) resolve over the compose network.
+      DATABASE_URL: postgres://notify:notify@postgres:5432/notify
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      PORT: "4000"
+      CHOKIDAR_USEPOLLING: "1" # reliable file-watching inside the container
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./server:/app          # bind-mount source for hot-reload
+      - /app/node_modules      # keep the container's Linux node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Vite dashboard. Proxies /v1 to the api service.
+  client:
+    build: ./client
+    environment:
+      VITE_PROXY_TARGET: http://api:4000
+      VITE_USE_POLLING: "1"
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    depends_on:
+      - api
+
+  # NOTE: the `worker` service is added in Phase 3 — it reuses the ./server
+  # image with `command: npm run worker`, demonstrating an independently
+  # scalable service (docker compose up --scale worker=3).
+
 volumes:
   pgdata:
