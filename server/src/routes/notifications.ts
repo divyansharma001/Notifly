@@ -1,94 +1,100 @@
 import { Router } from "express";
 import { randomUUID } from "node:crypto";
-import { notificationRequestSchema, type Channel, type LogEntry } from "../types.js";
-import * as logStore from "../log-store.js";
+import { and, desc, eq } from "drizzle-orm";
+import { db } from "../db/index.js";
+import { users, devices, notificationSettings, notificationLog } from "../db/schema.js";
+import { notificationRequestSchema, type Channel, type NotificationStatus } from "../types.js";
 import { sendEmail } from "../providers/email.js";
 import { sendSms } from "../providers/sms.js";
 import { sendPush } from "../providers/push.js";
 
 export const notificationsRouter = Router();
 
-// Hardcoded "user directory" for Phase 1. Phase 2 replaces this with a real
-// `users` table lookup (contact info) + a `notification_settings` opt-in check.
-const USERS: Record<string, { email: string; phone: string; pushToken: string }> = {
-  u1: { email: "asha@example.com", phone: "+15550000001", pushToken: "device-asha-1" },
-  u2: { email: "ben@example.com", phone: "+15550000002", pushToken: "device-ben-1" },
-};
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Naive Phase 1 "rendering": just stringify the data. Real Handlebars templates
-// arrive in Phase 5; for now we only care that something readable comes out.
+// Naive Phase 1 rendering — real Handlebars templates arrive in Phase 5.
 function render(templateId: string, data: Record<string, string>) {
   const dataStr = Object.entries(data).map(([k, v]) => `${k}=${v}`).join(", ") || "(no data)";
   return { subject: `Notification: ${templateId}`, body: dataStr };
 }
 
-// Dispatch to the right stub provider. Returns the recipient address we sent to,
-// so we can record it in the feed. Throws if the user has no contact for the channel.
-async function dispatch(
-  channel: Channel,
-  user: { email: string; phone: string; pushToken: string },
-  subject: string,
-  body: string,
-): Promise<string> {
-  switch (channel) {
-    case "email":
-      await sendEmail(user.email, subject, body);
-      return user.email;
-    case "sms":
-      await sendSms(user.phone, body);
-      return user.phone;
-    case "push":
-      await sendPush(user.pushToken, subject, body);
-      return user.pushToken;
-  }
+type User = typeof users.$inferSelect;
+
+// Resolve the address we actually send to for a given channel.
+// email/sms come straight off the user; push needs a registered device token.
+async function recipientFor(channel: Channel, user: User): Promise<string | null> {
+  if (channel === "email") return user.email ?? null;
+  if (channel === "sms") return user.phone ?? null;
+  const [device] = await db.select().from(devices).where(eq(devices.userId, user.id)).limit(1);
+  return device?.token ?? null;
 }
 
-// POST /v1/notifications — validate, look up user, "send", log, return 202.
+async function dispatch(channel: Channel, to: string, subject: string, body: string) {
+  if (channel === "email") return sendEmail(to, subject, body);
+  if (channel === "sms") return sendSms(to, body);
+  return sendPush(to, subject, body);
+}
+
+// POST /v1/notifications
 notificationsRouter.post("/", async (req, res) => {
-  // 1. Validate at the edge. If the body is malformed, fail fast with 400.
+  // 1. Validate the request shape.
   const parsed = notificationRequestSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: "invalid request", details: parsed.error.flatten() });
   }
   const { userId, channel, templateId, data } = parsed.data;
 
-  // 2. Look up the user's contact info.
-  const user = USERS[userId];
+  // 2. Look up the user. Guard the UUID format first so a bad id is a clean
+  //    404 instead of a Postgres "invalid input syntax for uuid" error.
+  if (!UUID_RE.test(userId)) {
+    return res.status(404).json({ error: `unknown user: ${userId}` });
+  }
+  const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
   if (!user) {
     return res.status(404).json({ error: `unknown user: ${userId}` });
   }
 
-  // 3. Every notification carries an eventId — the future dedup key (Phase 4).
+  // 3. OPT-IN ENFORCEMENT — the book's "respect user settings". Bail if the
+  //    user has explicitly opted out of this channel. (No row => default opt-in.)
+  const [setting] = await db
+    .select()
+    .from(notificationSettings)
+    .where(and(eq(notificationSettings.userId, userId), eq(notificationSettings.channel, channel)))
+    .limit(1);
+  if (setting && !setting.optIn) {
+    return res.status(403).json({ error: `${user.name ?? "user"} has opted out of ${channel}` });
+  }
+
+  // 4. Make sure we have somewhere to send.
+  const to = await recipientFor(channel, user);
+  if (!to) {
+    return res.status(422).json({ error: `no ${channel} contact for this user` });
+  }
+
+  // 5. Send synchronously (Phase 3 moves this behind a queue), then persist the
+  //    outcome to notification_log. eventId is the future dedup/idempotency key.
   const eventId = randomUUID();
   const { subject, body } = render(templateId, data);
 
-  // 4. Send SYNCHRONOUSLY for now (Phase 3 moves this behind a queue + worker).
-  let status: LogEntry["status"] = "sent";
-  let to = "";
+  let status: NotificationStatus = "sent";
   try {
-    to = await dispatch(channel, user, subject, body);
+    await dispatch(channel, to, subject, body);
   } catch (err) {
     status = "failed";
     console.error(`[send failed] ${eventId}`, err);
   }
 
-  // 5. Record it in the feed.
-  const entry: LogEntry = {
-    eventId,
-    userId,
-    channel,
-    templateId,
-    to,
-    status,
-    createdAt: new Date().toISOString(),
-  };
-  logStore.add(entry);
+  await db.insert(notificationLog).values({ eventId, userId, channel, templateId, to, status });
 
-  // 6. 202 Accepted — the contract stays valid once a queue is added.
   return res.status(202).json({ eventId, status });
 });
 
-// GET /v1/notifications — the live feed the dashboard polls.
-notificationsRouter.get("/", (_req, res) => {
-  res.json(logStore.list());
+// GET /v1/notifications — the live feed, newest first, straight from the DB.
+notificationsRouter.get("/", async (_req, res) => {
+  const rows = await db
+    .select()
+    .from(notificationLog)
+    .orderBy(desc(notificationLog.createdAt))
+    .limit(100);
+  res.json(rows);
 });

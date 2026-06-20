@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import { notificationsRouter } from "./routes/notifications.js";
+import { usersRouter } from "./routes/users.js";
 
 const app = express();
 
@@ -12,6 +13,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 
 // All notification endpoints live under the versioned /v1 prefix.
 app.use("/v1/notifications", notificationsRouter);
+app.use("/v1/users", usersRouter);
 
 // Phase 1 reads PORT from the environment but doesn't need dotenv yet; we add
 // real env loading in Phase 2 when DATABASE_URL appears.

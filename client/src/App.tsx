@@ -20,9 +20,18 @@ interface LogEntry {
   createdAt: string;
 }
 
+interface User {
+  id: string;
+  name: string | null;
+}
+
+// A valid-looking UUID that isn't seeded — lets us demo the 404 path.
+const UNKNOWN_USER_ID = "00000000-0000-0000-0000-000000000000";
+
 export default function App() {
   // --- compose form state ---
-  const [userId, setUserId] = useState("u1");
+  const [users, setUsers] = useState<User[]>([]);
+  const [userId, setUserId] = useState("");
   const [channel, setChannel] = useState<Channel>("email");
   const [templateId, setTemplateId] = useState("order_shipped");
   const [dataJson, setDataJson] = useState('{ "orderId": "A-91", "name": "Asha" }');
@@ -30,6 +39,17 @@ export default function App() {
 
   // --- feed state ---
   const [feed, setFeed] = useState<LogEntry[]>([]);
+
+  // Load the real users once so the dropdown sends actual UUIDs, not hardcoded ids.
+  useEffect(() => {
+    fetch("/v1/users")
+      .then((r) => r.json())
+      .then((data: User[]) => {
+        setUsers(data);
+        if (data.length > 0) setUserId(data[0].id);
+      })
+      .catch(() => {/* server may be starting; the field stays empty */});
+  }, []);
 
   // Poll the feed every 1.5s. Cleanup clears the timer on unmount.
   useEffect(() => {
@@ -107,9 +127,10 @@ export default function App() {
           <label className="field">
             <span>Recipient</span>
             <select value={userId} onChange={(e) => setUserId(e.target.value)}>
-              <option value="u1">Asha</option>
-              <option value="u2">Ben</option>
-              <option value="ghost">Unknown recipient</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>{u.name ?? u.id}</option>
+              ))}
+              <option value={UNKNOWN_USER_ID}>Unknown recipient</option>
             </select>
           </label>
 
