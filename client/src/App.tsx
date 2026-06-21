@@ -91,7 +91,7 @@ export default function App() {
       });
       const body = await res.json();
       if (res.ok) {
-        setMsg({ kind: "ok", text: `Sent — ${body.eventId.slice(0, 8)}` });
+        setMsg({ kind: "ok", text: `Queued — ${body.eventId.slice(0, 8)}` });
       } else {
         setMsg({ kind: "err", text: body.error ?? "That didn't go through." });
       }

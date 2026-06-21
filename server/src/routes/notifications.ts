@@ -3,10 +3,8 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, devices, notificationSettings, notificationLog } from "../db/schema.js";
-import { notificationRequestSchema, type Channel, type NotificationStatus } from "../types.js";
-import { sendEmail } from "../providers/email.js";
-import { sendSms } from "../providers/sms.js";
-import { sendPush } from "../providers/push.js";
+import { notificationRequestSchema, type Channel } from "../types.js";
+import { queueFor } from "../queues/index.js";
 
 export const notificationsRouter = Router();
 
@@ -27,12 +25,6 @@ async function recipientFor(channel: Channel, user: User): Promise<string | null
   if (channel === "sms") return user.phone ?? null;
   const [device] = await db.select().from(devices).where(eq(devices.userId, user.id)).limit(1);
   return device?.token ?? null;
-}
-
-async function dispatch(channel: Channel, to: string, subject: string, body: string) {
-  if (channel === "email") return sendEmail(to, subject, body);
-  if (channel === "sms") return sendSms(to, body);
-  return sendPush(to, subject, body);
 }
 
 // POST /v1/notifications
@@ -71,22 +63,23 @@ notificationsRouter.post("/", async (req, res) => {
     return res.status(422).json({ error: `no ${channel} contact for this user` });
   }
 
-  // 5. Send synchronously (Phase 3 moves this behind a queue), then persist the
-  //    outcome to notification_log. eventId is the future dedup/idempotency key.
+  // 5. Write the log row as `queued` BEFORE enqueuing — the book's no-data-loss
+  //    ordering. The worker is the only thing that promotes it to sent/failed.
+  //    If the process dies between these two lines, the row sits at `queued`
+  //    with no job — reconcilable. If it dies after, the job is safe in Redis.
+  //    Either way the notification is never silently lost.
   const eventId = randomUUID();
   const { subject, body } = render(templateId, data);
 
-  let status: NotificationStatus = "sent";
-  try {
-    await dispatch(channel, to, subject, body);
-  } catch (err) {
-    status = "failed";
-    console.error(`[send failed] ${eventId}`, err);
-  }
+  await db
+    .insert(notificationLog)
+    .values({ eventId, userId, channel, templateId, to, status: "queued" });
 
-  await db.insert(notificationLog).values({ eventId, userId, channel, templateId, to, status });
+  await queueFor(channel).add("send", { eventId, channel, to, subject, body });
 
-  return res.status(202).json({ eventId, status });
+  // 6. Return immediately. We are NOT waiting for the provider anymore — that's
+  //    the whole point. 202 = "accepted, will be processed".
+  return res.status(202).json({ eventId, status: "queued" });
 });
 
 // GET /v1/notifications — the live feed, newest first, straight from the DB.

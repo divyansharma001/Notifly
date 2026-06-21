@@ -47,6 +47,26 @@ services:
       redis:
         condition: service_healthy
 
+  # Worker — SAME image as `api`, different command. No HTTP port: it only
+  # pulls jobs from Redis and calls providers. Runs as its own container so it
+  # deploys/crashes/scales independently of the API (try: --scale worker=3).
+  worker:
+    build: ./server
+    command: npm run worker
+    environment:
+      DATABASE_URL: postgres://notify:notify@postgres:5432/notify
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      CHOKIDAR_USEPOLLING: "1"
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   # Vite dashboard. Proxies /v1 to the api service.
   client:
     build: ./client

@@ -9,13 +9,16 @@
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:seed": "tsx src/db/seed.ts"
+    "db:seed": "tsx src/db/seed.ts",
+    "worker": "tsx watch src/workers/index.ts"
   },
   "dependencies": {
+    "bullmq": "^5.79.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
     "drizzle-orm": "^0.45.2",
     "express": "^4.21.2",
+    "ioredis": "^5.11.1",
     "postgres": "^3.4.9",
     "zod": "^3.24.1"
   },
