@@ -7,6 +7,8 @@ dist/
 # Local-only docs (kept out of the public repo)
 CLAUDE.md
 notification-system-build-guide.md
+CONTEXT.md
+docs/
 
 # Local tooling / agent skills — not part of the project
 .agents/

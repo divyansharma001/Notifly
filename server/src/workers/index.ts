@@ -6,17 +6,18 @@ import type { SendJob } from "../queues/index.js";
 import { db } from "../db/index.js";
 import { notificationLog } from "../db/schema.js";
 import { CHANNELS, type Channel, type NotificationStatus } from "../types.js";
-import { sendEmail } from "../providers/email.js";
-import { sendSms } from "../providers/sms.js";
-import { sendPush } from "../providers/push.js";
+import { providers } from "../providers/index.js";
+import { PermanentError } from "../providers/errors.js";
 
 // Call the right provider for the job's channel. This is the slow, failure-prone
 // work we deliberately moved OFF the request path and into the worker.
+//
+// Notice the worker no longer names any vendor or knows any provider's quirks —
+// it looks the provider up by channel and calls the common `send`. Swapping a
+// vendor happens in the provider/registry files; this code stays untouched.
 async function deliver(job: Job<SendJob>) {
   const { channel, to, subject, body } = job.data;
-  if (channel === "email") return sendEmail(to, subject, body);
-  if (channel === "sms") return sendSms(to, body);
-  return sendPush(to, subject, body);
+  return providers[channel].send(to, { subject, body });
 }
 
 async function setStatus(eventId: string, status: NotificationStatus) {
@@ -77,8 +78,13 @@ function startWorker(channel: Channel) {
     // attemptsMade = tries so far; opts.attempts = the max we allowed (5).
     // Still below the max => a retry is coming, so the honest status is
     // `retrying`. At the max => the road ends here, mark it truly `failed`.
+    //
+    // BUT a PermanentError (ADR-0002) fails the job NOW regardless of attempts
+    // left — BullMQ won't retry it. Without this check we'd wrongly stamp the
+    // row `retrying` forever, since attemptsMade (1) is still < maxAttempts (5).
     const maxAttempts = job.opts.attempts ?? 1;
-    const willRetry = job.attemptsMade < maxAttempts;
+    const permanent = err instanceof PermanentError;
+    const willRetry = !permanent && job.attemptsMade < maxAttempts;
 
     console.error(
       `[${channel}] attempt ${job.attemptsMade}/${maxAttempts} failed for ` +
