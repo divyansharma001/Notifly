@@ -5,16 +5,11 @@ import { db } from "../db/index.js";
 import { users, devices, notificationSettings, notificationLog } from "../db/schema.js";
 import { notificationRequestSchema, type Channel } from "../types.js";
 import { queueFor } from "../queues/index.js";
+import { renderTemplate } from "../templates/index.js";
 
 export const notificationsRouter = Router();
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-// Naive Phase 1 rendering — real Handlebars templates arrive in Phase 5.
-function render(templateId: string, data: Record<string, string>) {
-  const dataStr = Object.entries(data).map(([k, v]) => `${k}=${v}`).join(", ") || "(no data)";
-  return { subject: `Notification: ${templateId}`, body: dataStr };
-}
 
 type User = typeof users.$inferSelect;
 
@@ -63,13 +58,23 @@ notificationsRouter.post("/", async (req, res) => {
     return res.status(422).json({ error: `no ${channel} contact for this user` });
   }
 
-  // 5. Write the log row as `queued` BEFORE enqueuing — the book's no-data-loss
+  // 5. RENDER THE TEMPLATE (Phase 5). Do this BEFORE writing the row so an
+  //    unknown templateId is a clean 422 and never leaves an orphaned `queued`
+  //    row with no real send behind it. Rendering at enqueue time means a broken
+  //    template fails synchronously here — the caller hears about it now, instead
+  //    of a worker choking on it later where no one is watching.
+  const rendered = renderTemplate(templateId, data);
+  if (!rendered) {
+    return res.status(422).json({ error: `unknown template: ${templateId}` });
+  }
+  const { subject, body } = rendered;
+
+  // 6. Write the log row as `queued` BEFORE enqueuing — the book's no-data-loss
   //    ordering. The worker is the only thing that promotes it to sent/failed.
   //    If the process dies between these two lines, the row sits at `queued`
   //    with no job — reconcilable. If it dies after, the job is safe in Redis.
   //    Either way the notification is never silently lost.
   const eventId = randomUUID();
-  const { subject, body } = render(templateId, data);
 
   await db
     .insert(notificationLog)
@@ -77,7 +82,7 @@ notificationsRouter.post("/", async (req, res) => {
 
   await queueFor(channel).add("send", { eventId, channel, to, subject, body });
 
-  // 6. Return immediately. We are NOT waiting for the provider anymore — that's
+  // 7. Return immediately. We are NOT waiting for the provider anymore — that's
   //    the whole point. 202 = "accepted, will be processed".
   return res.status(202).json({ eventId, status: "queued" });
 });
