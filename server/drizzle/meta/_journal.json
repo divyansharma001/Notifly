@@ -8,6 +8,13 @@
       "when": 1781939508473,
       "tag": "0000_giant_ravenous",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1782636421563,
+      "tag": "0001_swift_zodiak",
+      "breakpoints": true
     }
   ]
 }

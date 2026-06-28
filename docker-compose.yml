@@ -35,6 +35,12 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       PORT: "4000"
+      # Phase 7 — rate limiting. Lower RATE_LIMIT_MAX to demo the 429.
+      RATE_LIMIT_MAX: "20"
+      RATE_LIMIT_WINDOW_SEC: "3600"
+      # Phase 7 — dashboard service creds (seed creates a matching "dashboard").
+      DASH_APP_KEY: nfy_key_dashboard
+      DASH_APP_SECRET: nfy_secret_dashboard_dev
       CHOKIDAR_USEPOLLING: "1" # reliable file-watching inside the container
     ports:
       - "4000:4000"
@@ -73,6 +79,10 @@ services:
     environment:
       VITE_PROXY_TARGET: http://api:4000
       VITE_USE_POLLING: "1"
+      # Phase 7 — the Vite proxy attaches these as auth headers on /v1 calls.
+      # Read in vite.config.ts (Node), never shipped to the browser.
+      DASH_APP_KEY: nfy_key_dashboard
+      DASH_APP_SECRET: nfy_secret_dashboard_dev
     ports:
       - "5173:5173"
     volumes:

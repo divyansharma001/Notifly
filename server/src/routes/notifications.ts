@@ -6,6 +6,7 @@ import { users, devices, notificationSettings, notificationLog } from "../db/sch
 import { notificationRequestSchema, type Channel } from "../types.js";
 import { queueFor } from "../queues/index.js";
 import { renderTemplate } from "../templates/index.js";
+import { checkRateLimit } from "../rateLimit.js";
 
 export const notificationsRouter = Router();
 
@@ -50,6 +51,21 @@ notificationsRouter.post("/", async (req, res) => {
     .limit(1);
   if (setting && !setting.optIn) {
     return res.status(403).json({ error: `${user.name ?? "user"} has opted out of ${channel}` });
+  }
+
+  // 3b. RATE LIMIT (Phase 7). Cap sends per user+channel so we don't flood a
+  //     user. We check HERE — after opt-in, before writing anything — so an
+  //     over-limit request leaves NO trace (no log row, no job). That keeps the
+  //     no-data-loss guarantee intact: we never accepted it, so nothing is lost.
+  //     Rejecting with 429 + Retry-After is the honest HTTP contract; the caller
+  //     backs off and retries. (Sliding-window log — ADR-0003.)
+  const rate = await checkRateLimit(userId, channel);
+  if (!rate.allowed) {
+    res.set("Retry-After", String(rate.retryAfterSec));
+    return res.status(429).json({
+      error: `rate limit exceeded for ${channel}`,
+      retryAfterSec: rate.retryAfterSec,
+    });
   }
 
   // 4. Make sure we have somewhere to send.

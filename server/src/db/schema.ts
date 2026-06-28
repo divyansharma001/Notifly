@@ -1,5 +1,17 @@
 import { pgTable, uuid, text, boolean, timestamp, uniqueIndex, index } from "drizzle-orm/pg-core";
 
+// WHO is allowed to call our API (Phase 7 auth). Each calling service — another
+// backend, not an end user — gets a row here. `appKey` is the PUBLIC identifier
+// we look up by; `appSecretHash` is the SHA-256 of the secret (we never store the
+// secret itself, so a DB leak can't be used to call us). See ADR-0003/CONTEXT.md.
+export const services = pgTable("services", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  name: text("name").notNull(),
+  appKey: text("app_key").notNull().unique(),     // public id, sent as x-app-key
+  appSecretHash: text("app_secret_hash").notNull(), // sha256(secret), never plaintext
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // WHO we notify. Holds the contact info each channel needs.
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),

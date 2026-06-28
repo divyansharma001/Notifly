@@ -1,6 +1,16 @@
 import "dotenv/config";
 import { db } from "./index.js";
-import { users, notificationSettings, devices } from "./schema.js";
+import { users, notificationSettings, devices, services } from "./schema.js";
+import { hashSecret } from "../auth/keys.js";
+
+// Dev convenience: the dashboard and curl need a working key right after seeding.
+// So we seed two services with KNOWN dev credentials (overridable via env) and
+// store only their hashes. This is a deliberate dev shortcut — real callers get
+// RANDOM, shown-once secrets via `npm run service:create` (scripts/createService.ts).
+const DASH_APP_KEY = process.env.DASH_APP_KEY || "nfy_key_dashboard";
+const DASH_APP_SECRET = process.env.DASH_APP_SECRET || "nfy_secret_dashboard_dev";
+const DEMO_APP_KEY = "nfy_key_demo";
+const DEMO_APP_SECRET = "nfy_secret_demo_dev";
 
 // Dev seed: wipes the people-related tables and inserts two users with known
 // settings. Run with `npm run db:seed`. We intentionally make Ben opt OUT of
@@ -9,6 +19,14 @@ async function seed() {
   await db.delete(notificationSettings);
   await db.delete(devices);
   await db.delete(users);
+  await db.delete(services);
+
+  // Calling services (Phase 7 auth). Stored as hashes; the plaintext below is
+  // dev-only and printed so you can paste it into client/.env or curl headers.
+  await db.insert(services).values([
+    { name: "dashboard", appKey: DASH_APP_KEY, appSecretHash: hashSecret(DASH_APP_SECRET) },
+    { name: "demo", appKey: DEMO_APP_KEY, appSecretHash: hashSecret(DEMO_APP_SECRET) },
+  ]);
 
   const [asha, ben, divyansh] = await db
     .insert(users)
@@ -41,6 +59,9 @@ async function seed() {
   console.log(`  Asha     = ${asha.id}`);
   console.log(`  Ben      = ${ben.id} (opted out of SMS)`);
   console.log(`  Divyansh = ${divyansh.id} (real email test recipient)`);
+  console.log("\nseeded services (dev credentials — auth headers):");
+  console.log(`  dashboard:  x-app-key: ${DASH_APP_KEY}   x-app-secret: ${DASH_APP_SECRET}`);
+  console.log(`  demo:       x-app-key: ${DEMO_APP_KEY}   x-app-secret: ${DEMO_APP_SECRET}`);
   process.exit(0);
 }
 

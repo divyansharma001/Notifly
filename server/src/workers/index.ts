@@ -8,6 +8,7 @@ import { notificationLog } from "../db/schema.js";
 import { CHANNELS, type Channel, type NotificationStatus } from "../types.js";
 import { providers } from "../providers/index.js";
 import { PermanentError } from "../providers/errors.js";
+import { sentKey, failedKey } from "../metricsKeys.js";
 
 // Call the right provider for the job's channel. This is the slow, failure-prone
 // work we deliberately moved OFF the request path and into the worker.
@@ -47,6 +48,8 @@ function startWorker(channel: Channel) {
         await deliver(job);
         // Only the worker promotes the row to `sent` — closing the no-data-loss loop.
         await setStatus(eventId, "sent");
+        // Bump the metric counter the API's /metrics reads (ADR-0004).
+        await redis.incr(sentKey(channel));
         return "sent" as const;
       } catch (err) {
         // The send failed. RELEASE the claim so the upcoming retry is allowed to
@@ -92,6 +95,10 @@ function startWorker(channel: Channel) {
     );
 
     await setStatus(job.data.eventId, willRetry ? "retrying" : "failed");
+
+    // Count only TERMINAL failures (gave up / permanent) — a retry that will be
+    // attempted again isn't a failed notification yet.
+    if (!willRetry) await redis.incr(failedKey(channel));
   });
 
   return worker;
